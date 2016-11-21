@@ -20,11 +20,24 @@
 
 // Exits early if all IntersectionObserver and IntersectionObserverEntry
 // features are natively supported.
-if ('IntersectionObserver' in window &&
+if (false && 'IntersectionObserver' in window &&
     'IntersectionObserverEntry' in window &&
     'intersectionRatio' in window.IntersectionObserverEntry.prototype) {
   return;
 }
+
+var id = Date.now();
+
+var createSymbol = window.Symbol ||
+  function(name){
+    id++;
+
+    return (name || '') + id;
+  }
+;
+
+//use requestAnimationFrame to change DOM
+var rAF = window.requestAnimationFrame || setTimeout;
 
 
 // Use :root element of the document for .contains() calls because older IEs
@@ -84,15 +97,21 @@ function IntersectionObserver(callback, opt_options) {
     throw new Error('root must be an Element');
   }
 
+  id++;
+
   // Binds and throttles `this._checkForIntersections`.
   this._checkForIntersections = throttle(
       this._checkForIntersections.bind(this), this.THROTTLE_TIMEOUT);
 
   // Private properties.
   this._callback = callback;
-  this._observationTargets = [];
   this._queuedEntries = [];
   this._rootMarginValues = this._parseRootMargin(options.rootMargin);
+
+  this._addIoClass = rAFThrottle(this._addIoClass);
+  this._removeIoClass = rAFThrottle(this._removeIoClass);
+
+  this._setupTargets();
 
   // Public properties.
   this.thresholds = this._initThresholds(options.threshold);
@@ -125,9 +144,7 @@ IntersectionObserver.prototype.POLL_INTERVAL = null;
  */
 IntersectionObserver.prototype.observe = function(target) {
   // If the target is already being observed, do nothing.
-  if (this._observationTargets.some(function(item) {
-    return item.element == target;
-  })) {
+  if(target && (this._expando in target)){
     return;
   }
 
@@ -135,8 +152,17 @@ IntersectionObserver.prototype.observe = function(target) {
     throw new Error('target must be an Element');
   }
 
+  target[this._expando] = null;
+
   this._registerInstance();
-  this._observationTargets.push({element: target, entry: null});
+
+  if(docElement.contains(target)){
+    this._addObservationTargets.push(target);
+    this._addIoClass();
+  } else {
+    target.classList.add(this._className);
+  }
+
   this._monitorIntersections();
 };
 
@@ -146,15 +172,19 @@ IntersectionObserver.prototype.observe = function(target) {
  * @param {Element} target The DOM element to observe.
  */
 IntersectionObserver.prototype.unobserve = function(target) {
-  this._observationTargets =
-      this._observationTargets.filter(function(item) {
 
-    return item.element != target;
-  });
-  if (!this._observationTargets.length) {
-    this._unmonitorIntersections();
-    this._unregisterInstance();
+  if((this._expando in target)){
+    delete target[this._expando];
   }
+
+  if(docElement.contains(target)){
+    this._removeObservationTargets.push(target);
+    this._removeIoClass();
+  } else {
+    target.classList.remove(this._className);
+  }
+
+  removeFromArray(this._inviewTargets, target);
 };
 
 
@@ -162,9 +192,9 @@ IntersectionObserver.prototype.unobserve = function(target) {
  * Stops observing all target elements for intersection changes.
  */
 IntersectionObserver.prototype.disconnect = function() {
-  this._observationTargets = [];
   this._unmonitorIntersections();
   this._unregisterInstance();
+  this._setupTargets();
 };
 
 
@@ -201,6 +231,37 @@ IntersectionObserver.prototype._initThresholds = function(opt_threshold) {
     return t !== a[i - 1];
   });
 };
+
+IntersectionObserver.prototype._setupTargets = function(){
+  this._className = 'io-' + (id).toString(36);
+  this._expando = createSymbol('IntersectionObserver');
+  this._observationTargets = document.getElementsByClassName(this._className);
+  this._inviewTargets = [];
+  this._addObservationTargets = [];
+  this._removeObservationTargets = [];
+};
+
+['add', 'remove'].forEach(function(action, i){
+  var expandoCheck = i === 0;
+  var targetProperty = '_' + action + 'ObservationTargets';
+
+  IntersectionObserver.prototype['_' + action + 'IoClass'] = function(){
+    var target;
+
+    while(this[targetProperty].length){
+      target = this[targetProperty].shift();
+
+      if((this._expando in target) == expandoCheck){
+        target.classList[action](this._className);
+      }
+    }
+
+    if (!this._observationTargets.length) {
+      this._unmonitorIntersections();
+      this._unregisterInstance();
+    }
+  };
+});
 
 
 /**
@@ -289,6 +350,43 @@ IntersectionObserver.prototype._unmonitorIntersections = function() {
   }
 };
 
+IntersectionObserver.prototype._checkForIntersection = function(target, rootRect, rootIsInDom) {
+  var targetRect = getBoundingClientRect(target);
+  var rootContainsTarget = this._rootContainsTarget(target);
+  var oldEntry = target[this._expando];
+  var newEntry = target[this._expando] = new IntersectionObserverEntry({
+    time: now(),
+    target: target,
+    boundingClientRect: targetRect,
+    rootBounds: rootRect,
+    intersectionRect: (rootIsInDom && rootContainsTarget) ?
+      this._computeTargetAndRootIntersection(target, rootRect) :
+      getEmptyRect()
+  });
+
+  if (rootIsInDom && rootContainsTarget) {
+    // If the new entry intersection ratio has crossed any of the
+    // thresholds, add a new entry.
+    if (this._hasCrossedThreshold(oldEntry, newEntry)) {
+      this._queuedEntries.push(newEntry);
+
+      if(newEntry.intersectionRatio){
+        this._inviewTargets.push(target);
+      } else {
+        removeFromArray(this._inviewTargets, target);
+      }
+    }
+  } else {
+    // If the root is not in the DOM or target is not contained within
+    // root but the previous entry for this target had an intersection,
+    // add a new record indicating removal.
+    if (oldEntry && hasIntersection(oldEntry.intersectionRect)) {
+      this._queuedEntries.push(newEntry);
+      removeFromArray(this._inviewTargets, target);
+    }
+  }
+};
+
 
 /**
  * Scans each observation target for intersection changes and adds them
@@ -297,39 +395,35 @@ IntersectionObserver.prototype._unmonitorIntersections = function() {
  * @private
  */
 IntersectionObserver.prototype._checkForIntersections = function() {
+  var i, len, target, rootContainsTarget;
   var rootIsInDom = this._rootIsInDom();
   var rootRect = rootIsInDom ? this._getRootRect() : getEmptyRect();
 
-  this._observationTargets.forEach(function(item) {
-    var target = item.element;
-    var targetRect = getBoundingClientRect(target);
-    var rootContainsTarget = this._rootContainsTarget(target);
-    var oldEntry = item.entry;
-    var newEntry = item.entry = new IntersectionObserverEntry({
-      time: now(),
-      target: target,
-      boundingClientRect: targetRect,
-      rootBounds: rootRect,
-      intersectionRect: (rootIsInDom && rootContainsTarget) ?
-          this._computeTargetAndRootIntersection(target, rootRect) :
-          getEmptyRect()
-    });
+  for(i = this._inviewTargets.length - 1; i > -1; i--){
+    target = this._inviewTargets[i];
+    rootContainsTarget = this._rootContainsTarget(target);
 
-    if (rootIsInDom && rootContainsTarget) {
-      // If the new entry intersection ratio has crossed any of the
-      // thresholds, add a new entry.
-      if (this._hasCrossedThreshold(oldEntry, newEntry)) {
-        this._queuedEntries.push(newEntry);
+    if(!rootContainsTarget || !rootIsInDom){
+      this._checkForIntersection(target, rootRect, rootIsInDom);
+    }
+  }
+
+  if(rootIsInDom){
+    for(i = 0, len = this._observationTargets.length; i < len; i++){
+      target = this._observationTargets[i];
+
+      if(!target){
+        continue;
       }
-    } else {
-      // If the root is not in the DOM or target is not contained within
-      // root but the previous entry for this target had an intersection,
-      // add a new record indicating removal.
-      if (oldEntry && hasIntersection(oldEntry.intersectionRect)) {
-        this._queuedEntries.push(newEntry);
+
+      if(!(this._expando in target)){
+        this._removeObservationTargets(target);
+        this._removeIoClass();
+      } else {
+        this._checkForIntersection(target, rootRect, rootIsInDom);
       }
     }
-  }, this);
+  }
 
   if (this._queuedEntries.length) {
     this._callback(this.takeRecords(), this);
@@ -511,8 +605,7 @@ IntersectionObserver.prototype._registerInstance = function() {
  * @private
  */
 IntersectionObserver.prototype._unregisterInstance = function() {
-  var index = registry.indexOf(this);
-  if (index != -1) registry.splice(index, 1);
+  removeFromArray(registry, this);
 };
 
 
@@ -523,6 +616,11 @@ IntersectionObserver.prototype._unregisterInstance = function() {
  */
 function now() {
   return window.performance && performance.now && performance.now();
+}
+
+function removeFromArray(array, item) {
+  var index = array.indexOf(item);
+  if (index != -1) array.splice(index, 1);
 }
 
 
@@ -542,6 +640,29 @@ function throttle(fn, timeout) {
         fn();
         timer = null;
       }, timeout);
+    }
+  };
+}
+
+/**
+ * Throttles a function using requestAnimationFrame
+ * once within a given time period.
+ * @param {Function} fn The function to throttle.
+ * @return {Function} The rAF throttled function.
+ */
+function rAFThrottle(fn) {
+  var context = null;
+  var rAFIndex = null;
+  var execute = function(){
+    fn.call(context);
+    rAFIndex = null;
+    context = null;
+  };
+
+  return function () {
+    if (!rAFIndex) {
+      context = this;
+      rAFIndex = (document.hidden ? setTimeout : rAF)(execute);
     }
   };
 }
