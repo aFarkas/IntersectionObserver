@@ -97,8 +97,6 @@ function IntersectionObserver(callback, opt_options) {
     throw new Error('root must be an Element');
   }
 
-  id++;
-
   // Binds and throttles `this._checkForIntersections`.
   this._checkForIntersections = throttle(
       this._checkForIntersections.bind(this), this.THROTTLE_TIMEOUT);
@@ -233,6 +231,8 @@ IntersectionObserver.prototype._initThresholds = function(opt_threshold) {
 };
 
 IntersectionObserver.prototype._setupTargets = function(){
+  id++;
+
   this._className = 'io-' + (id).toString(36);
   this._expando = createSymbol('IntersectionObserver');
   this._observationTargets = document.getElementsByClassName(this._className);
