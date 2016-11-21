@@ -158,7 +158,7 @@ IntersectionObserver.prototype.observe = function(target) {
     this._addObservationTargets.push(target);
     this._addIoClass();
   } else {
-    target.classList.add(this._className);
+    target.setAttribute(this._attrName, '');
   }
 
   this._monitorIntersections();
@@ -179,7 +179,7 @@ IntersectionObserver.prototype.unobserve = function(target) {
     this._removeObservationTargets.push(target);
     this._removeIoClass();
   } else {
-    target.classList.remove(this._className);
+    target.removeAttribute(this._attrName);
   }
 
   removeFromArray(this._inviewTargets, target);
@@ -233,9 +233,8 @@ IntersectionObserver.prototype._initThresholds = function(opt_threshold) {
 IntersectionObserver.prototype._setupTargets = function(){
   id++;
 
-  this._className = 'io-' + (id).toString(36);
+  this._attrName = 'data-io-' + (id).toString(36);
   this._expando = createSymbol('IntersectionObserver');
-  this._observationTargets = document.getElementsByClassName(this._className);
   this._inviewTargets = [];
   this._addObservationTargets = [];
   this._removeObservationTargets = [];
@@ -252,13 +251,12 @@ IntersectionObserver.prototype._setupTargets = function(){
       target = this[targetProperty].shift();
 
       if((this._expando in target) == expandoCheck){
-        target.classList[action](this._className);
+        if(expandoCheck){
+          target.setAttribute(this._attrName, '');
+        } else {
+          target.removeAttribute(this._attrName);
+        }
       }
-    }
-
-    if (!this._observationTargets.length) {
-      this._unmonitorIntersections();
-      this._unregisterInstance();
     }
   };
 });
@@ -398,6 +396,7 @@ IntersectionObserver.prototype._checkForIntersections = function() {
   var i, len, target, rootContainsTarget;
   var rootIsInDom = this._rootIsInDom();
   var rootRect = rootIsInDom ? this._getRootRect() : getEmptyRect();
+  var observationTargets = document.querySelectorAll('[' + this._attrName + ']');
 
   for(i = this._inviewTargets.length - 1; i > -1; i--){
     target = this._inviewTargets[i];
@@ -409,8 +408,8 @@ IntersectionObserver.prototype._checkForIntersections = function() {
   }
 
   if(rootIsInDom){
-    for(i = 0, len = this._observationTargets.length; i < len; i++){
-      target = this._observationTargets[i];
+    for(i = 0, len = observationTargets.length; i < len; i++){
+      target = observationTargets[i];
 
       if(!target){
         continue;
